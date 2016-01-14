@@ -547,9 +547,6 @@ class TestAxisCollection(TestCase):
 
 
 class TestLArray(TestCase):
-    def _assert_equal_raw(self, la, raw):
-        assert_array_nan_equal(np.asarray(la), np.asarray(raw))
-
     def setUp(self):
         self.lipro = Axis('lipro', ['P%02d' % i for i in range(1, 16)])
         self.age = Axis('age', ':115')
@@ -2054,6 +2051,46 @@ age | geo | sex\lipro |      P01 |      P02 | ... |      P14 |      P15
         #large = LArray(large_data, axes=[large_axis])
         #large.plot()
         #large.hist()
+
+
+class TestStructuredLArray(TestCase):
+    def setUp(self):
+        length = 5
+        self.dt = np.dtype([('i', int), ('b', bool), ('f', float)])
+        self.lipro = Axis('lipro', ['P%02d' % i for i in range(1, length + 1)])
+        self.sex = Axis('sex', 'H,F')
+        data = np.empty(length, self.dt)
+        data['i'] = np.arange(length)
+        data['b'] = data['i'] % 2
+        data['f'] = 100.0 - np.arange(length)
+
+        self.array = LArray(data, [self.lipro])
+        self.data = data
+        self.i = LArray(data['i'], [self.lipro])
+        self.b = LArray(data['b'], [self.lipro])
+        self.f = LArray(data['f'], [self.lipro])
+
+    def test_str(self):
+        self.assertEqual(str(self.array), """\
+sex\\fields | i |     b |   f
+         H | 0 | False | 0.0
+         F | 1 |  True | 1.0""")
+
+    def test_getitem_field(self):
+        la = self.array
+        assert_array_equal(la['i'], self.i)
+        assert_array_equal(la['b'], self.b)
+        assert_array_equal(la['f'], self.f)
+
+    def test_getitem_non_field(self):
+        la = self.array
+        res = la['P02']
+        print(res)
+        assert_array_equal(res, LArray(self.data[1]))
+        self.assertEqual(type(res), LArray)
+        print(la['P02'])
+        # assert_array_equal(la['P02':'P04'], LArray(self.data[1:4],
+        #                                            self.lipro[1:4]))
 
 
 if __name__ == "__main__":

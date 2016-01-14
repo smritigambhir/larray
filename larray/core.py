@@ -1,6 +1,8 @@
 # -*- coding: utf8 -*-
 from __future__ import absolute_import, division, print_function
 
+from utils import split_on_condition
+
 __version__ = "0.6.1"
 
 __all__ = [
@@ -630,6 +632,42 @@ class Axis(object):
         return Axis(self.name, self.labels)
 
 
+class FieldsAxis(Axis):
+    def __init__(self, names):
+        Axis.__init__(self, 'fields', names)
+
+    def translate(self, key):
+        if isinstance(key, PGroup):
+            return key.key
+        if isinstance(key, slice):
+            return self.labels[key]
+        try:
+            exists = key in self._mapping
+        except TypeError:
+            exists = False
+        if exists:
+            return key
+        else:
+            raise KeyError(key)
+
+    def subaxis(self, key, name=None):
+        """
+        key is index-based (slice and fancy indexing are supported)
+        returns an Axis for a sub-array
+        """
+        if (isinstance(key, slice) and
+                key.start is None and key.stop is None and key.step is None):
+            return self
+        # we must NOT modify the axis name, even though this creates a new axis
+        # that is independent from the original one because the original
+        # name is probably what users will want to use to filter
+        if name is None:
+            name = self.name
+        if isinstance(key, LArray):
+            return tuple(key.axes)
+        return Axis(name, self.labels[key])
+
+
 # We need a separate class for LGroup and cannot simply create a
 # new Axis with a subset of values/ticks/labels: the subset of
 # ticks/labels of the LGroup need to correspond to its *Axis*
@@ -985,7 +1023,7 @@ class AxisCollection(object):
         res = self[:]
         if isinstance(axes, basestring):
             axes = axes.split(',')
-        elif isinstance(axes, Axis):
+        elif isinstance(axes, (Axis, int)):
             axes = [axes]
         # transform positional axis to axis objects
         axes = [self[axis] for axis in axes]
@@ -1296,7 +1334,10 @@ class LArray(object):
         ndim = data.ndim
         if axes is None:
             axes = AxisCollection(data.shape)
+            if data.dtype.names is not None:
+                axes += FieldsAxis(data.dtype.names)
         else:
+            axes = [axis for axis in axes if not isinstance(axis, FieldsAxis)]
             if len(axes) != ndim:
                 raise ValueError("number of axes (%d) does not match "
                                  "number of dimensions of data (%d)"
@@ -1308,6 +1349,8 @@ class LArray(object):
 
             if not isinstance(axes, AxisCollection):
                 axes = AxisCollection(axes)
+            if data.dtype.names is not None:
+                axes += FieldsAxis(data.dtype.names)
         self.data = data
         self.axes = axes
 
@@ -1627,6 +1670,20 @@ class LArray(object):
         data = np.asarray(self)
         translated_key = self.translated_key(key)
 
+        def isfieldkey(k):
+            return isinstance(k, str) or isinstance(k, np.ndarray) and \
+                                         k.dtype.type is np.str_
+        field_keys, translated_key = \
+            split_on_condition(translated_key, isfieldkey)
+        if len(field_keys) > 1:
+            raise ValueError("several fields keys")
+        elif len(field_keys) == 1:
+            assert isinstance(self.axes[-1], FieldsAxis)
+            data = data[field_keys[0]]
+            axes = self.axes.without(-1)
+        else:
+            axes = self.axes
+
         # TODO: make the combined keys should be objects which display as:
         # (axis1_label, axis2_label, ...) but should also store the axis (names)
         # Q: Should it be the same object as the NDLGroup?/NDKey?
@@ -1659,13 +1716,14 @@ class LArray(object):
             return LArray(data, axes)
 
         axes = [axis.subaxis(axis_key)
-                for axis, axis_key in zip(self.axes, translated_key)
+                for axis, axis_key in zip(axes, translated_key)
                 if not np.isscalar(axis_key)]
 
         cross_key = self.cross_key(translated_key, collapse_slices)
         data = data[cross_key]
         # drop length 1 dimensions created by scalar keys
         data = data.reshape(tuple(len(axis) for axis in axes))
+        return LArray(data, axes)
         if not axes:
             # scalars do not need to be wrapped in LArray
             return data
@@ -1885,12 +1943,17 @@ class LArray(object):
         if not self.ndim:
             return
 
-        # ert    | unit | geo\time | 2012   | 2011   | 2010
-        # NEER27 | I05  | AT       | 101.41 | 101.63 | 101.63
-        # NEER27 | I05  | AU       | 134.86 | 125.29 | 117.08
-        width = self.shape[-1]
-        height = int(np.prod(self.shape[:-1]))
-        data = np.asarray(self).reshape(height, width)
+        if isinstance(self.axes[-1], FieldsAxis):
+            width = len(self.axes[-1])
+            height = int(np.prod(self.shape))
+            data = np.asarray(self).reshape(height,)
+        else:
+            # ert    | unit | geo\time | 2012   | 2011   | 2010
+            # NEER27 | I05  | AT       | 101.41 | 101.63 | 101.63
+            # NEER27 | I05  | AU       | 134.86 | 125.29 | 117.08
+            width = self.shape[-1]
+            height = int(np.prod(self.shape[:-1]))
+            data = np.asarray(self).reshape(height, width)
 
         axes_names = self.axes.display_names[:]
         if len(axes_names) > 1:
@@ -3124,7 +3187,7 @@ class LArray(object):
         >>> mat.ndim
         3
         """
-        return self.data.ndim
+        return len(self.axes)
 
     @property
     def size(self):
