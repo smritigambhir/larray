@@ -77,7 +77,8 @@ from PyQt4.QtGui import (QApplication, QHBoxLayout, QColor, QTableView,
                          QAbstractItemDelegate,
                          QFont, QAction, QItemSelection,
                          QItemSelectionModel, QItemSelectionRange,
-                         QIcon, QStyle, QFontMetrics)
+                         QIcon, QStyle, QStyleOptionViewItem,
+                         QFontMetrics)
 from PyQt4.QtCore import (Qt, QModelIndex, QAbstractTableModel, QPoint,
                           QVariant, pyqtSlot as Slot)
 
@@ -445,26 +446,27 @@ class ArrayModel(QAbstractTableModel):
         self.reset()
 
     def get_value(self, index):
-        i = index.row() - len(self.xlabels) + 1
-        j = index.column() - len(self.ylabels) + 1
-        if i < 0 and j < 0:
-            return ""
-        if i < 0:
-            return self.xlabels[i][j]
-        if j < 0:
-            return self.ylabels[j][i]
+        r = index.row()
+        c = index.column()
+        i = r - len(self.xlabels) + 1
+        j = c - len(self.ylabels) + 1
+        if r < len(self.xlabels) - 1:
+            return self.xlabels[r + 1][c]
+        if c < len(self.ylabels) - 1:
+            return self.ylabels[c + 1][i]
         return self.changes.get((i, j), self._data[i, j])
 
     def data(self, index, role=Qt.DisplayRole):
         """Cell content"""
         if not index.isValid():
             return to_qvariant()
-        # if role == Qt.DecorationRole:
-        #     return ima.icon('editcopy')
-        # if role == Qt.DisplayRole:
-        #     return ""
-
-        if role == Qt.TextAlignmentRole:
+        if role == Qt.DecorationRole:
+            if index.row() == 0 and index.column() < len(self.ylabels):
+                style = self.dialog.style()
+                return style.standardIcon(QStyle.SP_TitleBarUnshadeButton)
+            else:
+                return to_qvariant()
+        elif role == Qt.TextAlignmentRole:
             if (index.row() < len(self.xlabels) - 1) or \
                     (index.column() < len(self.ylabels) - 1):
                 return to_qvariant(int(Qt.AlignCenter | Qt.AlignVCenter))
@@ -676,8 +678,12 @@ class ArrayView(QTableView):
         self.context_menu = self.setup_context_menu()
 
         # make the grid a bit more compact
-        self.horizontalHeader().setDefaultSectionSize(64)
-        self.verticalHeader().setDefaultSectionSize(20)
+        hh = self.horizontalHeader()
+        hh.setDefaultSectionSize(64)
+        hh.setMaximumHeight(12)
+        vh = self.verticalHeader()
+        vh.setDefaultSectionSize(20)
+        vh.setMaximumWidth(12)
 
         self.horizontalScrollBar().valueChanged.connect(
             self.on_horizontal_scroll_changed)
@@ -685,6 +691,63 @@ class ArrayView(QTableView):
             self.on_vertical_scroll_changed)
         # self.horizontalHeader().sectionClicked.connect(
         #     self.on_horizontal_header_clicked)
+        self.clicked.connect(self.on_clicked)
+        self.current_filter = {}
+
+    def on_clicked(self, index):
+        row = index.row()
+        column = index.column()
+        model = self.model()
+        ndims = len(model.ylabels) - 1
+        if row > 0 or column > ndims:
+            return
+
+        header_height = self.horizontalHeader().height()
+        header_width = self.verticalHeader().width()
+        x = self.columnViewportPosition(column) + header_width
+        y = self.rowViewportPosition(row) + self.rowHeight(row) + header_height
+
+        axis = self.model().la_data.axes[column]
+        menu = self.create_filter_menu(axis)
+        menu.exec_(self.mapToGlobal(QPoint(x, y)))
+
+    def create_filter_menu(self, axis):
+        def filter_changed(checked_items):
+            self.change_filter(axis, checked_items)
+        menu = FilterMenu(self)
+        menu.addItems([str(l) for l in axis.labels])
+        menu.checkedItemsChanged.connect(filter_changed)
+        return menu
+
+    def change_filter(self, axis, indices):
+        cur_filter = self.current_filter
+        # if index == 0:
+        if not indices or len(indices) == len(axis.labels):
+            if axis.name in cur_filter:
+                del cur_filter[axis.name]
+        else:
+            if len(indices) == 1:
+                cur_filter[axis.name] = axis.labels[indices[0]]
+            else:
+                cur_filter[axis.name] = axis.labels[indices]
+        filtered = self.model().la_data[cur_filter]
+        if np.isscalar(filtered):
+            # TODO: make it readonly
+            data, xlabels, ylabels = np.array([[filtered]]), None, None
+        else:
+            data, xlabels, ylabels = larray_to_array_and_labels(filtered)
+
+        self.model().set_data(data, xlabels, ylabels)
+        # FIXME: we should get model.changes and convert them to
+        #        "global changes" (because set_data reset the changes dict)
+        # self._set_raw_data(data, xlabels, ylabels)
+
+    # override viewOptions so that cell decorations (ie axes names arrows) are
+    # drawn to the right of cells instead of to the left
+    def viewOptions(self):
+        option = QTableView.viewOptions(self)
+        option.decorationPosition = QStyleOptionViewItem.Right
+        return option
 
     def on_horizontal_header_clicked(self, section_index):
         menu = FilterMenu(self)
@@ -773,13 +836,17 @@ class ArrayView(QTableView):
             # in addition to xlabels & ylabels,
             # TODO: in the future (pandas-based branch) we should use
             # to_string(data[self._selection_filter()])
-            dim_names = xlabels[0]
+            dim_names = [name for name in xlabels[1] if name]
+            ndim = len(dim_names)
             if len(dim_names) > 1:
                 dim_names = dim_names[:-2] + [dim_names[-2] + ' \\ ' +
                                               dim_names[-1]]
+
+            first_col = col_min + ndim - 1
+            last_col = col_max + ndim - 1 + 1
             topheaders = [dim_names +
-                          list(xlabels[i][col_min:col_max+1])
-                          for i in range(1, len(xlabels))]
+                          list(xlabels[i][first_col:last_col])
+                          for i in range(2, len(xlabels))]
             if not dim_names:
                 return raw_data
             elif len(dim_names) == 1:
@@ -943,6 +1010,7 @@ class ArrayEditorWidget(QWidget):
             data = np.array(data)
             readonly = True
         if isinstance(data, la.LArray):
+            self.model.la_data = data
             self.la_data = data
             filters_layout = self.filters_layout
             clear_layout(filters_layout)
@@ -1175,8 +1243,6 @@ def larray_to_array_and_labels(data):
         # convert that to array of Python strings
         return a.astype(object)
 
-    xlabels = [data.axes.names, to_str(data.axes.labels[-1])]
-
     class LazyLabels(object):
         def __init__(self, arrays):
             self.prod = Product(arrays)
@@ -1229,6 +1295,8 @@ def larray_to_array_and_labels(data):
     # ylabels = LazyLabels(otherlabels)
     coldims = 1
     # ylabels = [str(i) for i in range(len(row_labels))]
+    axes_names = data.axes.names
+    xlabels = to_str(data.axes.labels[-1])
     data = data.data[:]
     if data.ndim == 1:
         data = data.reshape(1, data.shape[0])
@@ -1239,6 +1307,9 @@ def larray_to_array_and_labels(data):
             LazyDimLabels(prod, i) for i in range(len(otherlabels))]
         # ylabels = [LazyRange(len(prod), coldims)] + [
         #     LazyDimLabels(prod, i) for i in range(len(otherlabels))]
+
+    axes_names = axes_names + [''] * (data.shape[-1] - 1)
+    xlabels = [[], axes_names, [''] * (data.ndim - 1) + list(xlabels)]
 
     if data.ndim > 2:
         data = data.reshape(np.prod(data.shape[:-1]), data.shape[-1])
@@ -1630,7 +1701,7 @@ if __name__ == "__main__":
     # view(arr2['0', 'A11'])
     # edit(arr1)
     # print(arr2['0', 'A11', :, 'P01'])
-    edit(arr2)
+    view(arr2)
     # print(arr2['0', 'A11', :, 'P01'])
 
     # data2 = np.random.normal(0, 10.0, size=(5000, 20))
