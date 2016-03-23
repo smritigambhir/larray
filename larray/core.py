@@ -168,13 +168,15 @@ try:
 except ImportError:
     import __builtin__ as builtins
 
-import numpy as np
+# import numpy as np
 import pandas as pd
 
 from larray.utils import (table2str, unique, csv_open, unzip, long,
                           decode, basestring, izip, rproduct, ReprString,
                           duplicates, array_lookup)
 
+import dask.array as da
+import larray.dask_support as np
 
 # TODO: return a generator, not a list
 def srange(*args):
@@ -1537,7 +1539,8 @@ class LArray(object):
     LArray class
     """
     def __init__(self, data, axes=None):
-        data = np.asarray(data)
+        if not isinstance(data, da.Array):
+            data = np.asarray(data)
         ndim = data.ndim
         if axes is None:
             axes = AxisCollection(data.shape)
@@ -1855,14 +1858,14 @@ class LArray(object):
         if isinstance(key, LArray) and np.issubdtype(key.dtype, np.bool_):
             # if only the axes order is wrong, transpose
             if key.size == self.size and key.shape != self.shape:
-                return np.asarray(key.transpose(self.axes)).nonzero()
+                return key.transpose(self.axes).data.nonzero()
             # otherwise we need to transform the key to integer
             elif key.size != self.size:
                 map_key = dict(zip(key.axes.names, np.asarray(key).nonzero()))
                 return tuple(map_key[name] if name in map_key else slice(None)
                              for name in self.axes.names)
             else:
-                return np.asarray(key).nonzero()
+                return key.data.nonzero()
 
         # convert scalar keys to 1D keys
         if not isinstance(key, (tuple, dict)):
@@ -1973,7 +1976,7 @@ class LArray(object):
             return tuple(key)
 
     def __getitem__(self, key, collapse_slices=False):
-        data = np.asarray(self.data)
+        data = self.data
         translated_key = self.translated_key(key)
 
         # TODO: make the combined keys should be objects which display as:
@@ -2107,7 +2110,7 @@ class LArray(object):
         #            -> 3, 8 WRONG (non adjacent dimentsions)
         #            -> 8, 3 WRONG
         #    4, 3, 2 -> 2, 2, 3, 2 is potentially ok (splitting dim)
-        data = np.asarray(self).reshape([len(axis) for axis in target_axes])
+        data = self.data.reshape([len(axis) for axis in target_axes])
         return LArray(data, target_axes)
 
     def reshape_like(self, target):
@@ -2234,7 +2237,7 @@ class LArray(object):
         # NEER27 | I05  | AU       | 134.86 | 125.29 | 117.08
         width = self.shape[-1]
         height = int(np.prod(self.shape[:-1]))
-        data = np.asarray(self).reshape(height, width)
+        data = self.data.reshape(height, width)
 
         axes_names = self.axes.display_names[:]
         if len(axes_names) > 1:
@@ -2251,12 +2254,15 @@ class LArray(object):
 
         # summary if needed
         if height > maxlines:
-            data = chain(data[:edgeitems], [["..."] * width], data[-edgeitems:])
-            if height > maxlines:
-                startticks = islice(ticks, edgeitems)
-                midticks = [["..."] * (self.ndim - 1)]
-                endticks = list(islice(rproduct(*labels), edgeitems))[::-1]
-                ticks = chain(startticks, midticks, endticks)
+            top = np.asarray(data[:edgeitems])
+            bottom = np.asarray(data[-edgeitems:])
+            data = chain(top, [["..."] * width], bottom)
+
+            startticks = islice(ticks, edgeitems)
+            endticks = list(islice(rproduct(*labels), edgeitems))[::-1]
+            ticks = chain(startticks, [["..."] * (self.ndim - 1)], endticks)
+        else:
+            data = np.asarray(data)
 
         for tick, dataline in izip(ticks, data):
             yield list(tick) + list(dataline)
@@ -2296,7 +2302,7 @@ class LArray(object):
         -------
         LArray or scalar
         """
-        src_data = np.asarray(self)
+        src_data = self.data
         axes = list(axes) if axes else self.axes
         axes_indices = tuple(self.axes.index(a) for a in axes)
         keepdims = bool(keepaxes)
@@ -2326,7 +2332,7 @@ class LArray(object):
         functions this only supports one axis at a time.
         """
         # TODO: accept a single group in axis, to filter & aggregate in one shot
-        return LArray(op(np.asarray(self), axis=self.axes.index(axis)),
+        return LArray(op(self.data, axis=self.axes.index(axis)),
                       self.axes)
 
     # TODO: now that items is never a (k, v), it should be renamed to
@@ -2393,7 +2399,7 @@ class LArray(object):
                 else:
                     out = res_data[idx]
 
-                arr = np.asarray(arr)
+                arr = arr.data
                 op(arr, axis=axis_idx, out=out, **kwargs)
                 del arr
             if killaxis:
@@ -2940,7 +2946,12 @@ class LArray(object):
             elif not np.isscalar(other):
                 raise TypeError("unsupported operand type(s) for %s: '%s' "
                                 "and '%s'" % (opname, type(self), type(other)))
-            return LArray(super_method(self.data, other), res_axes)
+            data = self.data
+            if isinstance(data, da.Array):
+                super_method = getattr(da.Array, fullname)
+            else:
+                super_method = getattr(np.ndarray, fullname)
+            return LArray(super_method(data, other), res_axes)
         opmethod.__name__ = fullname
         return opmethod
 
@@ -3295,7 +3306,7 @@ class LArray(object):
                         if axis.name not in axes_names]
         res_axes = axes + missing_axes
         axes_indices = [self.axes.index(axis) for axis in res_axes]
-        src_data = np.asarray(self)
+        src_data = self.data
         res_data = src_data.transpose(axes_indices)
         return LArray(res_data, res_axes)
     T = property(transpose)

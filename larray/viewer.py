@@ -1482,7 +1482,8 @@ def larray_to_array_and_labels(data):
     # ylabels = LazyLabels(otherlabels)
     coldims = 1
     # ylabels = [str(i) for i in range(len(row_labels))]
-    data = data.data[:]
+    #FIXME
+    data = np.asarray(data.data)[:]
     if data.ndim == 1:
         data = data.reshape(1, data.shape[0])
         ylabels = [[]]
