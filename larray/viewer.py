@@ -74,6 +74,7 @@ from itertools import chain
 import math
 import re
 import sys
+import traceback
 
 from qtpy.QtWidgets import (QApplication, QHBoxLayout, QTableView, QItemDelegate,
                             QListWidget, QSplitter, QListWidgetItem,
@@ -583,6 +584,14 @@ class XLabelsView(AbstractLabelView):
             raise TypeError( "Expected model of type {}. Received {} instead".format(
                 XLabelsModel.__name__, type(model)) )
         AbstractLabelView.__init__(self, parent, model)
+        self.horizontalHeader().setStyleSheet("border: none")
+        self.verticalHeader().setStyleSheet("border: none")
+        self.setStyleSheet("""
+            border-top: 1px solid grey;
+            border-bottom: none;
+            border-left: 1px solid grey;
+            border-right: 1px solid grey;
+        """)
 
     def updateGeometry(self):
         # Set maximum height
@@ -603,10 +612,9 @@ class XLabelsView(AbstractLabelView):
             self.verticalHeader().setFixedWidth(20)
             self.verticalHeader().setVisible(True)
         # Freeze the first (nb_axes - 1) columns --> ylabels
-        self.horizontalHeader().setResizeMode(QHeaderView.Interactive)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         for logicalIndex in range(0, nb_axes-1):
-            self.horizontalHeader().setResizeMode(
-                logicalIndex, QHeaderView.Fixed)
+            self.horizontalHeader().setSectionResizeMode(logicalIndex, QHeaderView.Fixed)
 
         self.updateGeometry()
 
@@ -618,6 +626,15 @@ class YLabelsView(AbstractLabelView):
             raise TypeError("Expected model of type {}. Received {} instead".format(
                 YLabelsModel.__name__, type(model)))
         AbstractLabelView.__init__(self, parent, model)
+
+        self.horizontalHeader().setStyleSheet("border: none")
+        self.verticalHeader().setStyleSheet("border: none")
+        self.setStyleSheet("""
+            border-top: none;
+            border-bottom: 1px solid grey;
+            border-left: 1px solid grey;
+            border-right: none
+        """)
 
         # Hide vertical/horizontal header
         self.horizontalHeader().hide()
@@ -2769,9 +2786,25 @@ def compare(*args, **kwargs):
         dlg.exec_()
 
 
+_orig_except_hook = sys.excepthook
+
+def _qt_except_hook(type, value, tback):
+    # only print the exception and do *not* exit the program
+    traceback.print_exception(type, value, tback)
+
+
+def install_except_hook():
+    sys.excepthook = _qt_except_hook
+
+
+def restore_except_hook():
+    sys.excepthook = _orig_except_hook
+
+
 if __name__ == "__main__":
     """Array editor test"""
 
+    install_except_hook()
     lipro = la.Axis('lipro', ['P%02d' % i for i in range(1, 16)])
     age = la.Axis('age', range(116))
     sex = la.Axis('sex', 'H,F')
@@ -2852,3 +2885,4 @@ if __name__ == "__main__":
     # arr3 = la.ndrange((1000, 1000, 500))
     # print(arr3.nbytes * 1e-9 + 'Gb')
     # edit(arr3, minvalue=-99, maxvalue=25.123456)
+    restore_except_hook()
